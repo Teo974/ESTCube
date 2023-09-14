@@ -1,0 +1,339 @@
+#include <iostream>
+
+#include "FreeRTOS.h"
+#include "task.h"
+
+#include "ecbal_drv.h"
+#include "echal_tim.h"
+
+#include "common.h"
+#include "crc_driver.h"
+#include "icp_wrapper.hpp"
+#include "usart_driver.h"
+#include "scheduler.hpp"
+#include "spi_driver.h"
+
+#include "cmd_common.hpp"
+
+#include "cts.hpp"
+#include "mcp23s17_driver.h"
+
+#define check_error(error) if(error) HardFault_Handler();
+
+void dummy_task(void *argsPtr){
+
+  // Initialise the SPI peripheral inside the MCU
+  spi_config_t spi_cfg = spi_config_default;
+  spi_cfg.miso_line = CTS_MISO;
+  spi_cfg.mosi_line = CTS_MOSI;
+  spi_cfg.sck_line = CTS_CLK;
+
+  // SPI driver initialize
+  drv_error_t driver_error = spi_initialize(CTS_SPI, &spi_cfg);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  // Create a Chip Select pin (output)
+  spi_cs_t cts_write_handle;
+  driver_error = spi_cs(CTS_WRITE_CS, DRV_ACTIVE_LOW, &cts_write_handle);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  // Create a Chip Select pin (input)
+  spi_cs_t cts_read_handle;
+  driver_error = spi_cs(CTS_READ_CS, DRV_ACTIVE_LOW, &cts_read_handle);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  // IO Expander configuration for the output
+  mcp23s17_config_t  mcp_out_cfg = {
+    .spi_index = CTS_SPI,
+    .spi_cs = cts_write_handle,
+    .inta_pin = {0, 0},
+    .intb_pin = {0, 0},
+    .address_pins = 0b000
+  };
+
+  // IO Expander configuration for the input
+  mcp23s17_config_t  mcp_inp_cfg = {
+    .spi_index = CTS_SPI,
+    .spi_cs = cts_read_handle,
+    .inta_pin = {0, 0},
+    .intb_pin = {0, 0},
+    .address_pins = 0b000
+  };
+
+  driver_error = mcp23s17_initialize(1, &mcp_out_cfg);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  driver_error = mcp23s17_initialize(2, &mcp_inp_cfg);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  // IO Expander PIN configuration Configuration the pin of both expander
+  mcp23s17_pin_config_t mcp_out_pin_cfg = mcp23s17_output_cfg_default;
+  mcp23s17_pin_config_t mcp_inp_pin_cfg = mcp23s17_input_cfg_default;
+
+  // cts_cfg_t cts_cfg = {.io_writer_index = 1, .io_reader_index = 2};
+
+  // cts_init(&cts_cfg);
+
+
+  // Array initialization
+  // Initialize output array (array with the values of the output pins)
+    // ouput pins with the port A from GPA0 - GPA6
+  uint8_t pinA_out_high_array[7];
+    // output pins with the port B from GPB0 - GPB7
+  uint8_t pinB_out_high_array[8];
+
+  // Initialize input array (array with the read values of the input pins (high or low) to see if the electric current flows)
+    // input pins with the port A from GPA0 - GPA6
+  uint8_t pinA_inp_high_array[7];
+    // input pins xith the port B from GPB0 - GPB7
+  uint8_t pinB_inp_high_array[8];
+
+  // Enbale the pins
+  // Define the port 'A' and 'B' for the pins output
+  drv_pin_t pinA_out;
+  pinA_out.port = 'A';
+  drv_pin_t pinB_out;
+  pinB_out.port = 'B';
+
+  // Define the port 'A' and 'B' for the pins input
+  drv_pin_t pinA_inp;
+  pinA_inp.port = 'A';
+  drv_pin_t pinB_inp;
+  pinB_inp.port = 'B';
+
+  // Initialize all the A pins and put the output A pins high
+  for (uint8_t i = 0; i < 7; i++) {
+    pinA_out.index = i;
+    pinA_inp.index = i;
+
+    // Enable/Initialize the pins OUTPUT (WRITER)
+    // OUTPUT : pinA_out initialize
+    driver_error = mcp23s17_pin_init(1,pinA_out,&mcp_out_pin_cfg);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // Enable/Initialize the pins input (READER)
+    // INPUT : pinA_inp initialize
+    driver_error = mcp23s17_pin_init(2,pinA_inp,&mcp_inp_pin_cfg);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // OUTPUT : make all pinA_out pins high
+    driver_error = mcp23s17_write(1,pinA_out,1);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // OUTPUT : Read the A pins if it's high or low (must be high) and store the result on arrays
+    driver_error = mcp23s17_read(1,pinA_out,&pinA_out_high_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+  };
+
+
+  // Initialize all the B pins and put the output B pins high
+  for (uint8_t i = 0; i < 8; i++) {
+    pinB_out.index = i;
+    pinB_inp.index = i;
+
+    // Enable/Initialize the pins OUTPUT (WRITER)
+    // OUTPUT : pinB_out initialize
+    driver_error = mcp23s17_pin_init(1,pinB_out,&mcp_out_pin_cfg);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // Enable/Initialize the pins input (READER)
+    // INPUT : pinB_inp initialize
+    driver_error = mcp23s17_pin_init(2,pinB_inp,&mcp_inp_pin_cfg);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // OUTPUT : make all pinB_out pins high
+    driver_error = mcp23s17_write(1,pinB_out,1);
+    if (driver_error.code) {
+    HardFault_Handler();
+    }
+
+    // OUTPUT : Read the B pins if it's high or low (must be high) and store the result on arrays
+    driver_error = mcp23s17_read(1,pinB_out,&pinB_out_high_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+  };
+
+  // Read all the input pins value if it's high or low (must be high)
+  for (uint8_t i = 0; i < 7; i++) {
+    pinA_inp.index = i;
+    pinB_inp.index = i;
+
+    // INPUT : Read the A pins if it's high or low (must be high)
+    driver_error = mcp23s17_read(2,pinA_inp,&pinA_inp_high_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+    // INPUT : Read the B pins if it's high or low (must be high)
+    driver_error = mcp23s17_read(2,pinB_inp,&pinB_inp_high_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+  };
+
+
+  // Put all the pins low
+  for (uint8_t i = 0; i < 7; i++) {
+    pinA_out.index = i;
+    pinB_out.index = i;
+
+    // OUTPUT : make all the A pins low
+    driver_error = mcp23s17_write(1,pinA_out,0);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+    // OUTPUT : make all the B pins low
+    driver_error = mcp23s17_write(1,pinB_out,0);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+  };
+
+  // OUTPUT : make the output pin GPB7 low
+  pinB_out.index = 7;
+  driver_error = mcp23s17_write(1,pinB_out,0);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  // TEST : Read all the pins value if it's high or low (must be low)
+  uint8_t pinA_out_low_array[7];
+  uint8_t pinB_out_low_array[8];
+  uint8_t pinA_inp_low_array[7];
+  uint8_t pinB_inp_low_array[8];
+
+  for (uint8_t i = 0; i < 7; i++) {
+    pinA_out.index = i;
+    pinB_out.index = i;
+    pinA_inp.index = i;
+    pinB_inp.index = i;
+
+    // OUTPUT : Read the A pins if it's high or low (must be low)
+    driver_error = mcp23s17_read(1,pinA_out,&pinA_out_low_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+    // OUTPUT : Read the B pins if it's high or low (must be low)
+    driver_error = mcp23s17_read(1,pinB_out,&pinB_out_low_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+    // INPUT : Read the A pins if it's high or low (must be low)
+    driver_error = mcp23s17_read(2,pinA_inp,&pinA_inp_low_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+    // INPUT : Read the B pins if it's high or low (must be low)
+    driver_error = mcp23s17_read(2,pinB_inp,&pinB_inp_low_array[i]);
+    if (driver_error.code) {
+      HardFault_Handler();
+    }
+
+  };
+
+  driver_error = mcp23s17_deinitialize(1);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  driver_error = mcp23s17_deinitialize(2);
+  if (driver_error.code) {
+    HardFault_Handler();
+  }
+
+  //wait forever
+  while (true);
+
+  vTaskDelete(NULL);
+}
+
+int main(){
+  hal_errors_t hal_error;
+  // Initialize the clocks
+  check_error((hal_error = hal_rcc_init()));
+
+  // Create the task
+  xTaskCreate(
+    dummy_task,
+    "init_task",
+    configMINIMAL_STACK_SIZE * 7,
+    NULL,
+    configMAX_PRIORITIES - 2,
+    NULL
+  );
+
+  vTaskStartScheduler();
+}
+
+
+
+// // Define the task handle
+// TaskHandle_t x12HourTaskHandle;
+
+// int main() {
+//     hal_errors_t hal_error;
+
+//     // Initialize the clocks
+//     check_error((hal_error = hal_rcc_init()));
+
+//     // Create the task
+//     xTaskCreate(
+//         twelveHourTask,
+//         "cts_task",
+//         configMINIMAL_STACK_SIZE * 7, // Adjust the stack size as needed
+//         NULL,
+//         configMAX_PRIORITIES - 2,
+//         &x12HourTaskHandle
+//     );
+
+//     // Start the FreeRTOS scheduler
+//     vTaskStartScheduler();
+
+//     // Should never reach here
+//     while (1) {
+//     }
+// }
+
+// // Function prototype for the task
+// void twelveHourTask(void *pvParameters) {
+//     TickType_t xLastWakeTime;
+
+//     // Initialize xLastWakeTime with the current time
+//     xLastWakeTime = xTaskGetTickCount();
+
+//     while (1) {
+//         // Put the task code here
+//         // This code will be executed every 12 hours
+
+//         // Use vTaskDelayUntil to ensure the task runs every 12 hours
+//         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(12 * 60 * 60 * 1000));
+//     }
+// }
